@@ -3,23 +3,27 @@ local GroupService = game:GetService("GroupService")
 
 local GROUP_ID = 408126707
 local HEAD_ROLE = "Head of State"
-local WHITELIST_ROLE = "Private"  -- minimum role name needed to use this script
-local FALLBACK_RANK = 1           -- used only if the role lookup fails
+local EXTRA_ROLES = {"head of state", "cs general"} -- always whitelisted (lowercase)
 local localPlayer = Players.LocalPlayer
 
 local GROUP_ICON = "rbxthumb://type=GroupIcon&id=" .. GROUP_ID .. "&w=150&h=150"
 
 local GOLD = Color3.fromRGB(255, 200, 0)
-local MEMBER_COLOR = Color3.fromRGB(200, 200, 200)  -- light grey text
-local GUEST_COLOR = Color3.fromRGB(120, 120, 120)   -- darker grey for non-members
-local OUTLINE_COLOR = Color3.fromRGB(110, 110, 110) -- grey outline
-local LIST_COLOR = Color3.fromRGB(70, 70, 70)       -- grey list background
+local MEMBER_COLOR = Color3.fromRGB(200, 200, 200)
+local GUEST_COLOR = Color3.fromRGB(120, 120, 120)
+local OUTLINE_COLOR = Color3.fromRGB(110, 110, 110)
+local LIST_COLOR = Color3.fromRGB(70, 70, 70)
 local BLACK = Color3.new(0, 0, 0)
 local WHITE = Color3.new(1, 1, 1)
 
--- Get the group's name and find the rank number of the whitelist role
+-- Group name and whitelisted ranks (CS roles, Head of State, CS General)
 local GROUP_NAME = "Socialist Red Republic TCO"
-local REQUIRED_RANK = FALLBACK_RANK
+local WHITELISTED_RANKS = {} -- [rankNumber] = true
+
+local function hasCS(roleName)
+	return string.find(" " .. string.lower(roleName) .. " ", "%f[%a]cs%f[%A]") ~= nil
+end
+
 do
 	local success, info = pcall(function()
 		return GroupService:GetGroupInfoAsync(GROUP_ID)
@@ -30,23 +34,21 @@ do
 		end
 		if info.Roles then
 			for _, role in ipairs(info.Roles) do
-				if string.lower(role.Name) == string.lower(WHITELIST_ROLE) then
-					REQUIRED_RANK = role.Rank
-					break
+				if hasCS(role.Name) or table.find(EXTRA_ROLES, string.lower(role.Name)) then
+					WHITELISTED_RANKS[role.Rank] = true
 				end
 			end
 		end
 	else
-		warn("Could not load group info, using fallback rank " .. FALLBACK_RANK)
+		warn("Could not load group info, nobody will be whitelisted")
 	end
 end
 
--- Whitelist check: must be in the group with the required rank or above
 local function isWhitelisted(player)
 	local success, rank = pcall(function()
 		return player:GetRankInGroup(GROUP_ID)
 	end)
-	return success and rank >= REQUIRED_RANK and rank > 0
+	return success and rank > 0 and WHITELISTED_RANKS[rank] == true
 end
 
 if not isWhitelisted(localPlayer) then
@@ -69,7 +71,7 @@ if not isWhitelisted(localPlayer) then
 	denyLabel.Text = "JOIN SRR TO ACCESS THE SCRIPT"
 	denyLabel.Parent = denyGui
 
-	return -- stop here: no list, button, or tags
+	return
 end
 
 -- Screen GUI
@@ -105,12 +107,12 @@ toggleButton.TextSize = 24
 toggleButton.Text = "Hide list"
 toggleButton.Parent = gui
 
--- Member list container (grey, fixed position and size)
+-- Member list container
 local listFrame = Instance.new("Frame")
 listFrame.Name = "MemberList"
 listFrame.AnchorPoint = Vector2.new(1, 0)
 listFrame.Position = UDim2.new(1, -10, 0, 100)
-listFrame.Size = UDim2.new(0, 350, 0, 300)
+listFrame.Size = UDim2.new(0, 500, 0, 300)
 listFrame.BackgroundColor3 = LIST_COLOR
 listFrame.BackgroundTransparency = 0.1
 listFrame.BorderSizePixel = 0
@@ -123,7 +125,6 @@ framePadding.PaddingLeft = UDim.new(0, 10)
 framePadding.PaddingRight = UDim.new(0, 10)
 framePadding.Parent = listFrame
 
--- Fixed title (stays visible while scrolling)
 local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, 0, 0, 40)
 title.BackgroundTransparency = 1
@@ -137,7 +138,6 @@ title.TextStrokeTransparency = 0
 title.Text = "Group members"
 title.Parent = listFrame
 
--- Scrollable area for the members
 local scroll = Instance.new("ScrollingFrame")
 scroll.Name = "Scroll"
 scroll.Position = UDim2.new(0, 0, 0, 46)
@@ -178,6 +178,72 @@ local function makeListLabel(text, color, order)
 	return l
 end
 
+-- Info setting (cycles Off / Time in server / Account age)
+local INFO_MODES = {"Off", "Time in server", "Account age"}
+local infoMode = 2
+
+local infoButton = Instance.new("TextButton")
+infoButton.Name = "InfoSetting"
+infoButton.AnchorPoint = Vector2.new(1, 0)
+infoButton.Position = UDim2.new(1, -170, 0, 56)
+infoButton.Size = UDim2.new(0, 200, 0, 36)
+infoButton.BackgroundColor3 = BLACK
+infoButton.BackgroundTransparency = 0.15
+infoButton.BorderSizePixel = 0
+infoButton.TextColor3 = WHITE
+infoButton.Font = Enum.Font.SourceSans
+infoButton.TextSize = 22
+infoButton.Text = "Info: " .. INFO_MODES[infoMode]
+infoButton.Parent = gui
+
+local entryData = {} -- [player] = {info = ..., joinedAt = ...}
+
+local function formatSeconds(s)
+	local h = math.floor(s / 3600)
+	local m = math.floor((s % 3600) / 60)
+	if h > 0 then return h .. "h " .. m .. "m" end
+	if m > 0 then return m .. "m" end
+	return s .. "s"
+end
+
+local function formatDays(d)
+	local y = math.floor(d / 365)
+	if y > 0 then return y .. "y " .. (d % 365) .. "d" end
+	return d .. "d"
+end
+
+local function entryText(player, info, joinedAt)
+	local text = player.Name .. " - " .. info.role
+	if infoMode == 2 then
+		text ..= " - " .. formatSeconds(os.time() - joinedAt)
+	elseif infoMode == 3 then
+		text ..= " - " .. formatDays(player.AccountAge)
+	end
+	return text
+end
+
+local function refreshList()
+	for player, data in pairs(entryData) do
+		local entry = scroll:FindFirstChild("Entry_" .. player.UserId)
+		if entry then
+			entry.Text = entryText(player, data.info, data.joinedAt)
+		end
+	end
+end
+
+infoButton.MouseButton1Click:Connect(function()
+	infoMode = infoMode % #INFO_MODES + 1
+	infoButton.Text = "Info: " .. INFO_MODES[infoMode]
+	refreshList()
+end)
+
+task.spawn(function()
+	while true do
+		task.wait(1)
+		refreshList()
+	end
+end)
+
 -- Group info
 local function getGroupInfo(player)
 	local success, result = pcall(function()
@@ -204,7 +270,6 @@ local function getColor(info)
 	return MEMBER_COLOR
 end
 
--- Adds an outline (thickness 1) to a text label
 local function addOutline(textLabel)
 	local stroke = Instance.new("UIStroke")
 	stroke.Color = OUTLINE_COLOR
@@ -284,11 +349,14 @@ local function addToList(player, info)
 	local entryName = "Entry_" .. player.UserId
 	if scroll:FindFirstChild(entryName) then return end
 
-	local entry = makeListLabel(player.Name .. " - " .. info.role, getColor(info), 255 - info.rank)
+	local entry = makeListLabel("", getColor(info), 255 - info.rank)
 	entry.Name = entryName
+	entryData[player] = {info = info, joinedAt = os.time()}
+	entry.Text = entryText(player, info, entryData[player].joinedAt)
 end
 
 local function removeFromList(player)
+	entryData[player] = nil
 	local entry = scroll:FindFirstChild("Entry_" .. player.UserId)
 	if entry then entry:Destroy() end
 end
@@ -328,4 +396,127 @@ Players.PlayerAdded:Connect(setupPlayer)
 Players.PlayerRemoving:Connect(removeFromList)
 for _, player in ipairs(Players:GetPlayers()) do
 	task.spawn(setupPlayer, player)
+end
+
+-- Friends of TCO_TACEMPIRE list (left side)
+local FRIEND_NAME = "TCO_TACEMPIRE"
+local friendId
+
+do
+	local ok, id = pcall(function()
+		return Players:GetUserIdFromNameAsync(FRIEND_NAME)
+	end)
+	if ok then
+		friendId = id
+	else
+		warn("Could not find user " .. FRIEND_NAME .. ": " .. tostring(id))
+	end
+end
+
+local friendToggle = Instance.new("TextButton")
+friendToggle.Name = "ToggleFriends"
+friendToggle.Position = UDim2.new(0, 10, 0, 56)
+friendToggle.Size = UDim2.new(0, 150, 0, 36)
+friendToggle.BackgroundColor3 = BLACK
+friendToggle.BackgroundTransparency = 0.15
+friendToggle.BorderSizePixel = 0
+friendToggle.TextColor3 = WHITE
+friendToggle.Font = Enum.Font.SourceSans
+friendToggle.TextSize = 24
+friendToggle.Text = "Hide friends"
+friendToggle.Parent = gui
+
+local friendFrame = Instance.new("Frame")
+friendFrame.Name = "FriendList"
+friendFrame.Position = UDim2.new(0, 10, 0, 100)
+friendFrame.Size = UDim2.new(0, 350, 0, 300)
+friendFrame.BackgroundColor3 = LIST_COLOR
+friendFrame.BackgroundTransparency = 0.1
+friendFrame.BorderSizePixel = 0
+friendFrame.Parent = gui
+
+local friendPadding = Instance.new("UIPadding")
+friendPadding.PaddingTop = UDim.new(0, 8)
+friendPadding.PaddingBottom = UDim.new(0, 8)
+friendPadding.PaddingLeft = UDim.new(0, 10)
+friendPadding.PaddingRight = UDim.new(0, 10)
+friendPadding.Parent = friendFrame
+
+local friendTitle = Instance.new("TextLabel")
+friendTitle.Size = UDim2.new(1, 0, 0, 40)
+friendTitle.BackgroundTransparency = 1
+friendTitle.Font = Enum.Font.SourceSans
+friendTitle.TextSize = 30
+friendTitle.TextXAlignment = Enum.TextXAlignment.Left
+friendTitle.TextTruncate = Enum.TextTruncate.AtEnd
+friendTitle.TextColor3 = MEMBER_COLOR
+friendTitle.TextStrokeColor3 = OUTLINE_COLOR
+friendTitle.TextStrokeTransparency = 0
+friendTitle.Text = "Friends of " .. FRIEND_NAME
+friendTitle.Parent = friendFrame
+
+local friendScroll = Instance.new("ScrollingFrame")
+friendScroll.Position = UDim2.new(0, 0, 0, 46)
+friendScroll.Size = UDim2.new(1, 0, 1, -46)
+friendScroll.BackgroundTransparency = 1
+friendScroll.BorderSizePixel = 0
+friendScroll.ScrollBarThickness = 6
+friendScroll.ScrollBarImageColor3 = MEMBER_COLOR
+friendScroll.ScrollingDirection = Enum.ScrollingDirection.Y
+friendScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+friendScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+friendScroll.Parent = friendFrame
+
+local friendLayout = Instance.new("UIListLayout")
+friendLayout.SortOrder = Enum.SortOrder.Name
+friendLayout.Padding = UDim.new(0, 4)
+friendLayout.Parent = friendScroll
+
+friendToggle.MouseButton1Click:Connect(function()
+	friendFrame.Visible = not friendFrame.Visible
+	friendToggle.Text = friendFrame.Visible and "Hide friends" or "Show friends"
+end)
+
+local function addFriendEntry(player)
+	if not friendId then return end
+
+	local isFriend = (player.UserId == friendId)
+	if not isFriend then
+		local ok, result = pcall(function()
+			return player:IsFriendsWith(friendId)
+		end)
+		isFriend = ok and result
+	end
+	if not isFriend then return end
+	if not player.Parent then return end
+
+	local entryName = "Friend_" .. player.UserId
+	if friendScroll:FindFirstChild(entryName) then return end
+
+	local l = Instance.new("TextLabel")
+	l.Name = entryName
+	l.Size = UDim2.new(1, -10, 0, 40)
+	l.BackgroundTransparency = 1
+	l.Font = Enum.Font.SourceSans
+	l.TextSize = 32
+	l.TextXAlignment = Enum.TextXAlignment.Left
+	l.TextTruncate = Enum.TextTruncate.AtEnd
+	l.TextColor3 = MEMBER_COLOR
+	l.TextStrokeColor3 = OUTLINE_COLOR
+	l.TextStrokeTransparency = 0
+	l.Text = player.Name .. (player.UserId == friendId and " (owner)" or "")
+	l.Parent = friendScroll
+end
+
+local function removeFriendEntry(player)
+	local entry = friendScroll:FindFirstChild("Friend_" .. player.UserId)
+	if entry then entry:Destroy() end
+end
+
+Players.PlayerAdded:Connect(function(player)
+	task.spawn(addFriendEntry, player)
+end)
+Players.PlayerRemoving:Connect(removeFriendEntry)
+for _, player in ipairs(Players:GetPlayers()) do
+	task.spawn(addFriendEntry, player)
 end
