@@ -1,9 +1,11 @@
 local Players = game:GetService("Players")
 local GroupService = game:GetService("GroupService")
+local UserInputService = game:GetService("UserInputService")
 
 local GROUP_ID = 408126707
 local HEAD_ROLE = "Head of State"
 local EXTRA_ROLES = {"head of state", "cs general"} -- always whitelisted (lowercase)
+local FRIEND_NAME = "TCO_TACEMPIRE"
 local localPlayer = Players.LocalPlayer
 
 local GROUP_ICON = "rbxthumb://type=GroupIcon&id=" .. GROUP_ID .. "&w=150&h=150"
@@ -12,13 +14,14 @@ local GOLD = Color3.fromRGB(255, 200, 0)
 local MEMBER_COLOR = Color3.fromRGB(200, 200, 200)
 local GUEST_COLOR = Color3.fromRGB(120, 120, 120)
 local OUTLINE_COLOR = Color3.fromRGB(110, 110, 110)
-local LIST_COLOR = Color3.fromRGB(70, 70, 70)
+local PANEL_COLOR = Color3.fromRGB(58, 58, 58)
 local BLACK = Color3.new(0, 0, 0)
 local WHITE = Color3.new(1, 1, 1)
+local RED = Color3.fromRGB(230, 0, 0)
 
 -- Group name and whitelisted ranks (CS roles, Head of State, CS General)
 local GROUP_NAME = "Socialist Red Republic TCO"
-local WHITELISTED_RANKS = {} -- [rankNumber] = true
+local WHITELISTED_RANKS = {}
 
 local function hasCS(roleName)
 	return string.find(" " .. string.lower(roleName) .. " ", "%f[%a]cs%f[%A]") ~= nil
@@ -74,137 +77,290 @@ if not isWhitelisted(localPlayer) then
 	return
 end
 
--- Screen GUI
+----------------------------------------------------------------
+-- UI (flat dark panel, white borders, tab buttons)
+----------------------------------------------------------------
 local gui = Instance.new("ScreenGui")
 gui.Name = "GroupInfo"
 gui.ResetOnSpawn = false
 gui.Parent = localPlayer:WaitForChild("PlayerGui")
 
--- Your own rank box (top-right)
-local label = Instance.new("TextLabel")
-label.Size = UDim2.new(0, 300, 0, 40)
-label.Position = UDim2.new(1, -310, 0, 10)
-label.BackgroundColor3 = BLACK
-label.BackgroundTransparency = 0.4
-label.TextColor3 = WHITE
-label.TextScaled = true
-label.Font = Enum.Font.SourceSans
-label.Text = "Checking group..."
-label.Parent = gui
+local function styleBox(obj)
+	obj.BackgroundColor3 = PANEL_COLOR
+	obj.BackgroundTransparency = 0
+	obj.BorderSizePixel = 2
+	obj.BorderColor3 = WHITE
+	obj.BorderMode = Enum.BorderMode.Inset
+end
 
--- Show / hide button
-local toggleButton = Instance.new("TextButton")
-toggleButton.Name = "ToggleList"
-toggleButton.AnchorPoint = Vector2.new(1, 0)
-toggleButton.Position = UDim2.new(1, -10, 0, 56)
-toggleButton.Size = UDim2.new(0, 150, 0, 36)
-toggleButton.BackgroundColor3 = BLACK
-toggleButton.BackgroundTransparency = 0.15
-toggleButton.BorderSizePixel = 0
-toggleButton.TextColor3 = WHITE
-toggleButton.Font = Enum.Font.SourceSans
-toggleButton.TextSize = 24
-toggleButton.Text = "Hide list"
-toggleButton.Parent = gui
+local function styleText(obj, size)
+	obj.Font = Enum.Font.Arial
+	obj.TextColor3 = WHITE
+	obj.TextSize = size
+end
 
--- Member list container
-local listFrame = Instance.new("Frame")
-listFrame.Name = "MemberList"
-listFrame.AnchorPoint = Vector2.new(1, 0)
-listFrame.Position = UDim2.new(1, -10, 0, 100)
-listFrame.Size = UDim2.new(0, 500, 0, 300)
-listFrame.BackgroundColor3 = LIST_COLOR
-listFrame.BackgroundTransparency = 0.1
-listFrame.BorderSizePixel = 0
-listFrame.Parent = gui
+local NORMAL_WIDTH = 520
+local WIDE_WIDTH = 800
+local expanded = false
+local hideTags = false -- "disable shown rank" setting
 
-local framePadding = Instance.new("UIPadding")
-framePadding.PaddingTop = UDim.new(0, 8)
-framePadding.PaddingBottom = UDim.new(0, 8)
-framePadding.PaddingLeft = UDim.new(0, 10)
-framePadding.PaddingRight = UDim.new(0, 10)
-framePadding.Parent = listFrame
+local window = Instance.new("Frame")
+window.Name = "Window"
+window.AnchorPoint = Vector2.new(1, 0)
+window.Position = UDim2.new(1, -10, 0, 50)
+window.Size = UDim2.new(0, NORMAL_WIDTH, 0, 384)
+window.BackgroundTransparency = 1
+window.Parent = gui
 
-local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, 0, 0, 40)
-title.BackgroundTransparency = 1
-title.Font = Enum.Font.SourceSans
-title.TextSize = 36
-title.TextXAlignment = Enum.TextXAlignment.Left
-title.TextTruncate = Enum.TextTruncate.AtEnd
-title.TextColor3 = MEMBER_COLOR
-title.TextStrokeColor3 = OUTLINE_COLOR
-title.TextStrokeTransparency = 0
-title.Text = "Group members"
-title.Parent = listFrame
+-- Small button to reopen the window after pressing X
+local openButton = Instance.new("TextButton")
+openButton.Name = "OpenWindow"
+openButton.AnchorPoint = Vector2.new(1, 0)
+openButton.Position = window.Position
+openButton.Size = UDim2.new(0, 100, 0, 36)
+styleBox(openButton)
+styleText(openButton, 22)
+openButton.Text = "open"
+openButton.Visible = false
+openButton.Parent = gui
 
-local scroll = Instance.new("ScrollingFrame")
-scroll.Name = "Scroll"
-scroll.Position = UDim2.new(0, 0, 0, 46)
-scroll.Size = UDim2.new(1, 0, 1, -46)
-scroll.BackgroundTransparency = 1
-scroll.BorderSizePixel = 0
-scroll.ScrollBarThickness = 6
-scroll.ScrollBarImageColor3 = MEMBER_COLOR
-scroll.ScrollingDirection = Enum.ScrollingDirection.Y
-scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
-scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-scroll.Parent = listFrame
+-- Tabs row (5 tabs, each 20% of the window width)
+local TAB_COUNT = 5
+local function makeTab(text, index)
+	local b = Instance.new("TextButton")
+	b.Position = UDim2.new((index - 1) / TAB_COUNT, 0, 0, 0)
+	b.Size = UDim2.new(1 / TAB_COUNT, 0, 0, 40)
+	styleBox(b)
+	styleText(b, 22)
+	b.TextScaled = true
+	b.Text = text
+	b.Parent = window
+	local c = Instance.new("UITextSizeConstraint")
+	c.MaxTextSize = 24
+	c.MinTextSize = 10
+	c.Parent = b
+	return b
+end
 
-local layout = Instance.new("UIListLayout")
-layout.SortOrder = Enum.SortOrder.LayoutOrder
-layout.Padding = UDim.new(0, 4)
-layout.Parent = scroll
+local rankTab = makeTab("your rank", 1)
+local membersTab = makeTab("members", 2)
+local tacsTab = makeTab("tacs", 3)
+local infoTab = makeTab("info", 4)
+local settingsTab = makeTab("Settings", 5)
 
-toggleButton.MouseButton1Click:Connect(function()
-	listFrame.Visible = not listFrame.Visible
-	toggleButton.Text = listFrame.Visible and "Hide list" or "Show list"
+-- Title row + expand button + red X
+local titleLabel = Instance.new("TextLabel")
+titleLabel.Position = UDim2.new(0, 0, 0, 40)
+titleLabel.Size = UDim2.new(1, -96, 0, 44)
+styleBox(titleLabel)
+styleText(titleLabel, 24)
+titleLabel.TextXAlignment = Enum.TextXAlignment.Left
+titleLabel.TextTruncate = Enum.TextTruncate.AtEnd
+titleLabel.Text = " Your rank"
+titleLabel.Parent = window
+
+local expandButton = Instance.new("TextButton")
+expandButton.Name = "ExpandWidth"
+expandButton.Position = UDim2.new(1, -96, 0, 40)
+expandButton.Size = UDim2.new(0, 48, 0, 44)
+styleBox(expandButton)
+styleText(expandButton, 26)
+expandButton.Text = "<>"
+expandButton.Parent = window
+
+expandButton.MouseButton1Click:Connect(function()
+	expanded = not expanded
+	window.Size = UDim2.new(0, expanded and WIDE_WIDTH or NORMAL_WIDTH, 0, 384)
+	expandButton.Text = expanded and "><" or "<>"
 end)
 
+local closeButton = Instance.new("TextButton")
+closeButton.Name = "CloseOrDrag"
+closeButton.Position = UDim2.new(1, -48, 0, 40)
+closeButton.Size = UDim2.new(0, 48, 0, 44)
+closeButton.BackgroundTransparency = 1
+closeButton.BorderSizePixel = 0
+closeButton.Font = Enum.Font.Arial
+closeButton.TextSize = 48
+closeButton.TextColor3 = RED
+closeButton.TextStrokeColor3 = BLACK
+closeButton.TextStrokeTransparency = 0
+closeButton.Text = "X"
+closeButton.Parent = window
+
+-- The X: click it to close, hold and drag it to move the window
+local dragging = false
+local dragMoved = false
+local dragStart, startPos
+
+closeButton.InputBegan:Connect(function(input)
+	if input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch then
+		dragging = true
+		dragMoved = false
+		dragStart = input.Position
+		startPos = window.Position
+	end
+end)
+
+UserInputService.InputChanged:Connect(function(input)
+	if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+		or input.UserInputType == Enum.UserInputType.Touch) then
+		local delta = input.Position - dragStart
+		if delta.Magnitude > 6 then
+			dragMoved = true
+		end
+		if dragMoved then
+			window.Position = UDim2.new(
+				startPos.X.Scale, startPos.X.Offset + delta.X,
+				startPos.Y.Scale, startPos.Y.Offset + delta.Y
+			)
+		end
+	end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+	if dragging and (input.UserInputType == Enum.UserInputType.MouseButton1
+		or input.UserInputType == Enum.UserInputType.Touch) then
+		dragging = false
+		if not dragMoved then
+			openButton.Position = window.Position
+			window.Visible = false
+			openButton.Visible = true
+		end
+	end
+end)
+
+openButton.MouseButton1Click:Connect(function()
+	window.Visible = true
+	openButton.Visible = false
+end)
+
+-- Content area
+local content = Instance.new("Frame")
+content.Position = UDim2.new(0, 0, 0, 84)
+content.Size = UDim2.new(1, 0, 0, 300)
+styleBox(content)
+content.Parent = window
+
+local function makePage()
+	local p = Instance.new("Frame")
+	p.Size = UDim2.new(1, 0, 1, 0)
+	p.BackgroundTransparency = 1
+	p.Visible = false
+	p.Parent = content
+	return p
+end
+
+local function makeScroll(parent)
+	local s = Instance.new("ScrollingFrame")
+	s.Position = UDim2.new(0, 6, 0, 6)
+	s.Size = UDim2.new(1, -12, 1, -12)
+	s.BackgroundTransparency = 1
+	s.BorderSizePixel = 0
+	s.ScrollBarThickness = 6
+	s.ScrollBarImageColor3 = WHITE
+	s.ScrollingDirection = Enum.ScrollingDirection.Y
+	s.CanvasSize = UDim2.new(0, 0, 0, 0)
+	s.AutomaticCanvasSize = Enum.AutomaticSize.Y
+	s.Parent = parent
+	local l = Instance.new("UIListLayout")
+	l.SortOrder = Enum.SortOrder.LayoutOrder
+	l.Padding = UDim.new(0, 4)
+	l.Parent = s
+	return s
+end
+
+local rankPage = makePage()
+local membersPage = makePage()
+local tacsPage = makePage()
+local settingsPage = makePage()
+
+-- Your rank page: credit box on top, rank below it
+local creditBox = Instance.new("TextLabel")
+creditBox.Position = UDim2.new(0, 6, 0, 6)
+creditBox.Size = UDim2.new(1, -12, 0, 40)
+styleBox(creditBox)
+styleText(creditBox, 22)
+creditBox.TextScaled = true
+creditBox.Text = "(Made by Nationalflagofgerman)"
+creditBox.Parent = rankPage
+local creditConstraint = Instance.new("UITextSizeConstraint")
+creditConstraint.MaxTextSize = 24
+creditConstraint.Parent = creditBox
+
+local rankLabel = Instance.new("TextLabel")
+rankLabel.Position = UDim2.new(0, 0, 0, 52)
+rankLabel.Size = UDim2.new(1, 0, 1, -52)
+rankLabel.BackgroundTransparency = 1
+styleText(rankLabel, 48)
+rankLabel.TextScaled = true
+rankLabel.Text = "Checking group..."
+rankLabel.Parent = rankPage
+local rankConstraint = Instance.new("UITextSizeConstraint")
+rankConstraint.MaxTextSize = 56
+rankConstraint.Parent = rankLabel
+
+local scroll = makeScroll(membersPage)
+local tacsScroll = makeScroll(tacsPage)
+
+-- Settings page: disable shown rank toggle
+local hideButton = Instance.new("TextButton")
+hideButton.Name = "DisableShownRank"
+hideButton.Position = UDim2.new(0, 6, 0, 6)
+hideButton.Size = UDim2.new(1, -12, 0, 44)
+styleBox(hideButton)
+styleText(hideButton, 24)
+hideButton.Text = "disable shown rank: OFF"
+hideButton.Parent = settingsPage
+
+-- Tab switching
+local pages = {
+	{page = rankPage, tab = rankTab, title = " Your rank"},
+	{page = membersPage, tab = membersTab, title = " Group members in server"},
+	{page = tacsPage, tab = tacsTab, title = " Tacs Member"},
+	{page = settingsPage, tab = settingsTab, title = " Settings"},
+}
+
+local function showPage(index)
+	for i, p in ipairs(pages) do
+		p.page.Visible = (i == index)
+		p.tab.BackgroundColor3 = (i == index) and Color3.fromRGB(90, 90, 90) or PANEL_COLOR
+	end
+	titleLabel.Text = pages[index].title
+end
+
+for i, p in ipairs(pages) do
+	p.tab.MouseButton1Click:Connect(function()
+		showPage(i)
+	end)
+end
+showPage(2)
+
+----------------------------------------------------------------
+-- Members list
+----------------------------------------------------------------
 local function makeListLabel(text, color, order)
 	local l = Instance.new("TextLabel")
-	l.Size = UDim2.new(1, -10, 0, 40)
+	l.Size = UDim2.new(1, -10, 0, 34)
 	l.BackgroundTransparency = 1
-	l.Font = Enum.Font.SourceSans
-	l.TextSize = 36
+	l.Font = Enum.Font.Arial
+	l.TextSize = 26
 	l.TextXAlignment = Enum.TextXAlignment.Left
 	l.TextTruncate = Enum.TextTruncate.AtEnd
 	l.TextColor3 = color
-	l.TextStrokeColor3 = OUTLINE_COLOR
-	l.TextStrokeTransparency = 0
 	l.LayoutOrder = order
 	l.Text = text
 	l.Parent = scroll
 	return l
 end
 
--- Info setting (cycles Off / Time in server / Account age)
-local INFO_MODES = {"Off", "Time in server", "Account age"}
+-- Info setting (toggles Off / Account age)
+local INFO_MODES = {"Off", "Account age"}
 local infoMode = 2
+infoTab.Text = "info: " .. INFO_MODES[infoMode]
 
-local infoButton = Instance.new("TextButton")
-infoButton.Name = "InfoSetting"
-infoButton.AnchorPoint = Vector2.new(1, 0)
-infoButton.Position = UDim2.new(1, -170, 0, 56)
-infoButton.Size = UDim2.new(0, 200, 0, 36)
-infoButton.BackgroundColor3 = BLACK
-infoButton.BackgroundTransparency = 0.15
-infoButton.BorderSizePixel = 0
-infoButton.TextColor3 = WHITE
-infoButton.Font = Enum.Font.SourceSans
-infoButton.TextSize = 22
-infoButton.Text = "Info: " .. INFO_MODES[infoMode]
-infoButton.Parent = gui
-
-local entryData = {} -- [player] = {info = ..., joinedAt = ...}
-
-local function formatSeconds(s)
-	local h = math.floor(s / 3600)
-	local m = math.floor((s % 3600) / 60)
-	if h > 0 then return h .. "h " .. m .. "m" end
-	if m > 0 then return m .. "m" end
-	return s .. "s"
-end
+local entryData = {}
 
 local function formatDays(d)
 	local y = math.floor(d / 365)
@@ -212,11 +368,9 @@ local function formatDays(d)
 	return d .. "d"
 end
 
-local function entryText(player, info, joinedAt)
+local function entryText(player, info)
 	local text = player.Name .. " - " .. info.role
 	if infoMode == 2 then
-		text ..= " - " .. formatSeconds(os.time() - joinedAt)
-	elseif infoMode == 3 then
 		text ..= " - " .. formatDays(player.AccountAge)
 	end
 	return text
@@ -226,25 +380,20 @@ local function refreshList()
 	for player, data in pairs(entryData) do
 		local entry = scroll:FindFirstChild("Entry_" .. player.UserId)
 		if entry then
-			entry.Text = entryText(player, data.info, data.joinedAt)
+			entry.Text = entryText(player, data.info)
 		end
 	end
 end
 
-infoButton.MouseButton1Click:Connect(function()
+infoTab.MouseButton1Click:Connect(function()
 	infoMode = infoMode % #INFO_MODES + 1
-	infoButton.Text = "Info: " .. INFO_MODES[infoMode]
+	infoTab.Text = "info: " .. INFO_MODES[infoMode]
 	refreshList()
 end)
 
-task.spawn(function()
-	while true do
-		task.wait(1)
-		refreshList()
-	end
-end)
-
--- Group info
+----------------------------------------------------------------
+-- Group info + overhead tags
+----------------------------------------------------------------
 local function getGroupInfo(player)
 	local success, result = pcall(function()
 		return {
@@ -278,7 +427,6 @@ local function addOutline(textLabel)
 	stroke.Parent = textLabel
 end
 
--- Overhead tag
 local function createTag(character, text, color, showIcon)
 	local head = character:WaitForChild("Head", 10)
 	if not head then return end
@@ -293,6 +441,7 @@ local function createTag(character, text, color, showIcon)
 	billboard.AlwaysOnTop = false
 	billboard.MaxDistance = 80
 	billboard.Adornee = head
+	billboard.Enabled = not hideTags
 	billboard.Parent = head
 
 	local container = Instance.new("Frame")
@@ -342,7 +491,23 @@ local function createTag(character, text, color, showIcon)
 	addOutline(tag)
 end
 
--- List entries
+-- Show / hide the rank, group name, and image above everyone's head
+local function applyTagVisibility()
+	for _, p in ipairs(Players:GetPlayers()) do
+		local head = p.Character and p.Character:FindFirstChild("Head")
+		local tag = head and head:FindFirstChild("RankTag")
+		if tag then
+			tag.Enabled = not hideTags
+		end
+	end
+end
+
+hideButton.MouseButton1Click:Connect(function()
+	hideTags = not hideTags
+	hideButton.Text = "disable shown rank: " .. (hideTags and "ON" or "OFF")
+	applyTagVisibility()
+end)
+
 local function addToList(player, info)
 	if not info.inGroup then return end
 
@@ -351,8 +516,8 @@ local function addToList(player, info)
 
 	local entry = makeListLabel("", getColor(info), 255 - info.rank)
 	entry.Name = entryName
-	entryData[player] = {info = info, joinedAt = os.time()}
-	entry.Text = entryText(player, info, entryData[player].joinedAt)
+	entryData[player] = {info = info}
+	entry.Text = entryText(player, info)
 end
 
 local function removeFromList(player)
@@ -361,18 +526,17 @@ local function removeFromList(player)
 	if entry then entry:Destroy() end
 end
 
--- Player setup
 local function setupPlayer(player)
 	local info = getGroupInfo(player)
 
 	if player == localPlayer then
 		if not info then
-			label.Text = "Group check failed"
+			rankLabel.Text = "Group check failed"
 		elseif info.inGroup then
-			label.Text = info.role
-			label.TextColor3 = getColor(info)
+			rankLabel.Text = info.role
+			rankLabel.TextColor3 = getColor(info)
 		else
-			label.Text = "Not in group"
+			rankLabel.Text = "Not in group"
 		end
 	end
 
@@ -398,8 +562,9 @@ for _, player in ipairs(Players:GetPlayers()) do
 	task.spawn(setupPlayer, player)
 end
 
--- Friends of TCO_TACEMPIRE list (left side)
-local FRIEND_NAME = "TCO_TACEMPIRE"
+----------------------------------------------------------------
+-- Tacs of TCO_TACEMPIRE
+----------------------------------------------------------------
 local friendId
 
 do
@@ -413,71 +578,7 @@ do
 	end
 end
 
-local friendToggle = Instance.new("TextButton")
-friendToggle.Name = "ToggleFriends"
-friendToggle.Position = UDim2.new(0, 10, 0, 56)
-friendToggle.Size = UDim2.new(0, 150, 0, 36)
-friendToggle.BackgroundColor3 = BLACK
-friendToggle.BackgroundTransparency = 0.15
-friendToggle.BorderSizePixel = 0
-friendToggle.TextColor3 = WHITE
-friendToggle.Font = Enum.Font.SourceSans
-friendToggle.TextSize = 24
-friendToggle.Text = "Hide friends"
-friendToggle.Parent = gui
-
-local friendFrame = Instance.new("Frame")
-friendFrame.Name = "FriendList"
-friendFrame.Position = UDim2.new(0, 10, 0, 100)
-friendFrame.Size = UDim2.new(0, 350, 0, 300)
-friendFrame.BackgroundColor3 = LIST_COLOR
-friendFrame.BackgroundTransparency = 0.1
-friendFrame.BorderSizePixel = 0
-friendFrame.Parent = gui
-
-local friendPadding = Instance.new("UIPadding")
-friendPadding.PaddingTop = UDim.new(0, 8)
-friendPadding.PaddingBottom = UDim.new(0, 8)
-friendPadding.PaddingLeft = UDim.new(0, 10)
-friendPadding.PaddingRight = UDim.new(0, 10)
-friendPadding.Parent = friendFrame
-
-local friendTitle = Instance.new("TextLabel")
-friendTitle.Size = UDim2.new(1, 0, 0, 40)
-friendTitle.BackgroundTransparency = 1
-friendTitle.Font = Enum.Font.SourceSans
-friendTitle.TextSize = 30
-friendTitle.TextXAlignment = Enum.TextXAlignment.Left
-friendTitle.TextTruncate = Enum.TextTruncate.AtEnd
-friendTitle.TextColor3 = MEMBER_COLOR
-friendTitle.TextStrokeColor3 = OUTLINE_COLOR
-friendTitle.TextStrokeTransparency = 0
-friendTitle.Text = "Friends of " .. FRIEND_NAME
-friendTitle.Parent = friendFrame
-
-local friendScroll = Instance.new("ScrollingFrame")
-friendScroll.Position = UDim2.new(0, 0, 0, 46)
-friendScroll.Size = UDim2.new(1, 0, 1, -46)
-friendScroll.BackgroundTransparency = 1
-friendScroll.BorderSizePixel = 0
-friendScroll.ScrollBarThickness = 6
-friendScroll.ScrollBarImageColor3 = MEMBER_COLOR
-friendScroll.ScrollingDirection = Enum.ScrollingDirection.Y
-friendScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
-friendScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
-friendScroll.Parent = friendFrame
-
-local friendLayout = Instance.new("UIListLayout")
-friendLayout.SortOrder = Enum.SortOrder.Name
-friendLayout.Padding = UDim.new(0, 4)
-friendLayout.Parent = friendScroll
-
-friendToggle.MouseButton1Click:Connect(function()
-	friendFrame.Visible = not friendFrame.Visible
-	friendToggle.Text = friendFrame.Visible and "Hide friends" or "Show friends"
-end)
-
-local function addFriendEntry(player)
+local function addTacsEntry(player)
 	if not friendId then return end
 
 	local isFriend = (player.UserId == friendId)
@@ -490,33 +591,31 @@ local function addFriendEntry(player)
 	if not isFriend then return end
 	if not player.Parent then return end
 
-	local entryName = "Friend_" .. player.UserId
-	if friendScroll:FindFirstChild(entryName) then return end
+	local entryName = "Tacs_" .. player.UserId
+	if tacsScroll:FindFirstChild(entryName) then return end
 
 	local l = Instance.new("TextLabel")
 	l.Name = entryName
-	l.Size = UDim2.new(1, -10, 0, 40)
+	l.Size = UDim2.new(1, -10, 0, 34)
 	l.BackgroundTransparency = 1
-	l.Font = Enum.Font.SourceSans
-	l.TextSize = 32
+	l.Font = Enum.Font.Arial
+	l.TextSize = 26
 	l.TextXAlignment = Enum.TextXAlignment.Left
 	l.TextTruncate = Enum.TextTruncate.AtEnd
-	l.TextColor3 = MEMBER_COLOR
-	l.TextStrokeColor3 = OUTLINE_COLOR
-	l.TextStrokeTransparency = 0
+	l.TextColor3 = WHITE
 	l.Text = player.Name .. (player.UserId == friendId and " (owner)" or "")
-	l.Parent = friendScroll
+	l.Parent = tacsScroll
 end
 
-local function removeFriendEntry(player)
-	local entry = friendScroll:FindFirstChild("Friend_" .. player.UserId)
+local function removeTacsEntry(player)
+	local entry = tacsScroll:FindFirstChild("Tacs_" .. player.UserId)
 	if entry then entry:Destroy() end
 end
 
 Players.PlayerAdded:Connect(function(player)
-	task.spawn(addFriendEntry, player)
+	task.spawn(addTacsEntry, player)
 end)
-Players.PlayerRemoving:Connect(removeFriendEntry)
+Players.PlayerRemoving:Connect(removeTacsEntry)
 for _, player in ipairs(Players:GetPlayers()) do
-	task.spawn(addFriendEntry, player)
+	task.spawn(addTacsEntry, player)
 end
